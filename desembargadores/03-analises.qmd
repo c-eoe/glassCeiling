@@ -1,0 +1,339 @@
+---
+title: "Glass Ceiling no Judiciário e Políticas de Gênero: Evidência Empírica a Partir de Modelos Jurimétricos e de Inteligência Artificial"
+format: gfm
+execute:
+  echo: false
+  warning: false
+  message: false
+lang: pt
+---
+
+## Leitura dos dados
+
+```{r}
+da_desembargadores <- arrow::read_parquet(
+  here::here("desembargadores/parquet/desembargadores_1990.parquet")
+)
+infos_pdf_desembargadores <- arrow::read_parquet(
+  here::here("desembargadores/parquet/desembargadores_infos_pdf.parquet")
+)
+aux_desemb_ativo <- arrow::read_parquet(
+  here::here("desembargadores/parquet/desembargadores_ativos.parquet")
+)
+```
+
+## Base auxiliar
+
+```{r}
+#| label: aux-decada
+
+aux_decada <- da_desembargadores |>
+  dplyr::filter(
+    data_promocao_desembargador != "NA",
+    data_promocao_desembargador >= "1997-03-12"
+  ) |>
+  dplyr::inner_join(infos_pdf_desembargadores, "page") |>
+  dplyr::mutate(
+    data_promocao_desembargador = lubridate::ymd(data_promocao_desembargador),
+    decada_nomeacao = dplyr::case_when(
+      data_promocao_desembargador < "2000-01-01" ~ "entre 1997 e 1999",
+      data_promocao_desembargador < "2010-01-01" ~ "entre 2000 e 2009",
+      data_promocao_desembargador < "2020-01-01" ~ "entre 2010 e 2019",
+      .default = "2020 ou depois"
+    ),
+    decada_nomeacao = factor(
+      decada_nomeacao,
+      levels = c("entre 1997 e 1999", "entre 2000 e 2009", "entre 2010 e 2019", "2020 ou depois")
+    )
+  )
+```
+
+## Nomeadas por década
+
+```{r}
+#| label: tbl-decada-nomeacao
+#| tbl-cap: Proporção de desembargadoras nomeadas por década
+total_decada <- aux_decada |>
+  dplyr::count(decada_nomeacao) |>
+  dplyr::mutate(n_prop = glue::glue("{n} ({scales::percent(1, .1)})")) |>
+  dplyr::select(-n)
+
+aux_decada |>
+  dplyr::count(decada_nomeacao, sexo) |>
+  dplyr::group_by(decada_nomeacao) |>
+  dplyr::mutate(prop = n/sum(n)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(n_prop = glue::glue("{n} ({scales::percent(prop, .1)})")) |>
+  dplyr::select(-n, -prop) |>
+  tidyr::pivot_wider(names_from = sexo, values_from = n_prop) |>
+  dplyr::inner_join(total_decada, c("decada_nomeacao")) |>
+  purrr::set_names(c("Década da nomeação", "Mulheres", "Homens", "Total")) |>
+  knitr::kable()
+```
+
+## Nomeadas por ano
+
+```{r}
+#| label: fig-prop-ano
+#| fig-cap: Proporção de mulheres nomeadas por ano
+
+p <- da_desembargadores |>
+  dplyr::inner_join(infos_pdf_desembargadores, "page") |>
+  dplyr::mutate(
+    data_promocao_desembargador = lubridate::ymd(data_promocao_desembargador),
+    um = 1,
+  ) |>
+  dplyr::mutate(ano = lubridate::year(data_promocao_desembargador)) |>
+  dplyr::group_by(ano) |>
+  dplyr::summarise(
+    n = sum(um),
+    n_mulheres = sum(sexo == "F"),
+    prop = n_mulheres/n
+  ) |>
+  dplyr::mutate(
+    erro = 1.96 * sqrt(prop * (1 - prop)/n)
+  ) |>
+  ggplot2::ggplot(ggplot2::aes(x = ano, y = prop)) +
+  ggplot2::geom_col() +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(ymin = pmax(0, prop - erro), ymax = pmin(1, prop + erro)),
+    width = 0.2,
+    alpha = .2
+  ) +
+  ggplot2::geom_smooth(se = FALSE) +
+  ggplot2::scale_y_continuous(labels = scales::percent) +
+  ggplot2::theme_minimal(16, base_family = "serif") +
+  ggplot2::labs(
+    x = "Ano de promoção para desembargador",
+    y = "Proporção de mulheres promovidas"
+  )
+
+p
+```
+
+
+## Idade de nomeação -- distribuição
+
+```{r}
+#| label: fig-idade-nomeacao
+#| fig-cap: Distribuição da idade de nomeação por sexo
+
+p <- aux_decada |>
+  dplyr::filter(data_nascimento != "NA") |>
+  dplyr::mutate(
+    dt_nasc = lubridate::ymd(data_nascimento),
+    idade_nomeacao = as.numeric(data_promocao_desembargador - dt_nasc) / 365.25,
+    sexo = dplyr::if_else(sexo == "F", "Feminino", "Masculino")
+  ) |>
+  ggplot2::ggplot(ggplot2::aes(x = idade_nomeacao, y = sexo, fill = sexo)) +
+  ggridges::geom_density_ridges(
+    quantile_lines = TRUE, quantiles = 2, show.legend = FALSE,
+    alpha = .8
+  ) +
+  ggplot2::scale_fill_viridis_d(begin = .2, end = .8) +
+  ggplot2::theme_minimal(16, base_family = "serif") +
+  ggplot2::scale_x_continuous(breaks = seq(40, 100, 10)) +
+  ggplot2::labs(
+    x = "Idade na nomeação (anos)",
+    y = "Sexo"
+  )
+
+## teste de hipótese
+aux_decada |>
+  dplyr::filter(data_nascimento != "NA") |>
+  dplyr::mutate(
+    dt_nasc = lubridate::ymd(data_nascimento),
+    idade_nomeacao = as.numeric(data_promocao_desembargador - dt_nasc) / 365.25,
+    sexo = dplyr::if_else(sexo == "F", "Feminino", "Masculino")
+  ) |>
+  with(t.test(idade_nomeacao ~ sexo)) |>
+  broom::tidy()
+
+p
+```
+
+## Idade de nomeação -- dispersão
+
+```{r}
+#| label: fig-idade-nomeacao-disp
+#| fig-cap: Relação entre idade de nomeação e data de nomeação
+p <- aux_decada |>
+  dplyr::filter(data_nascimento != "NA") |>
+  dplyr::mutate(
+    dt_nasc = lubridate::ymd(data_nascimento),
+    idade_nomeacao = as.numeric(data_promocao_desembargador - dt_nasc) / 365.25
+  ) |>
+  ggplot2::ggplot(ggplot2::aes(data_promocao_desembargador, idade_nomeacao, color = sexo)) +
+  ggplot2::geom_point() +
+  ggplot2::geom_smooth(se = TRUE) +
+  ggplot2::scale_colour_viridis_d(begin = .2, end = .8) +
+  ggplot2::theme_minimal(16, base_family = "serif") +
+  ggplot2::labs(
+    x = "Data de nomeação",
+    y = "Idade na nomeação (anos)",
+    color = "Sexo"
+  )
+
+p
+```
+
+
+## Local de origem (dados utilizados no texto)
+
+```{r}
+#| eval: false
+aux_decada |>
+  dplyr::left_join(abjData::muni, c("id_municipio" = "muni_id")) |>
+  dplyr::mutate(capital_sp = dplyr::case_when(
+    id_municipio %in% c("3550308") ~ "São Paulo",
+    .default = "Outros"
+  )) |>
+  dplyr::count(sexo, capital_sp) |>
+  dplyr::group_by(sexo) |>
+  dplyr::mutate(prop = n/sum(n)) |>
+  dplyr::ungroup()
+
+aux_decada |>
+  dplyr::mutate(
+    estado_nascimento = dplyr::case_when(
+      estado_nascimento %in% c("SP") ~ "São Paulo",
+      estado_nascimento %in% c("RJ") ~ "Rio de Janeiro",
+      .default = estado_nascimento
+    ),
+    estado_nascimento = forcats::fct_infreq(estado_nascimento),
+    estado_nascimento = forcats::fct_other(
+      estado_nascimento, keep = c("São Paulo"),
+      other_level = "Outros"
+    )
+  ) |>
+  dplyr::count(sexo, estado_nascimento) |>
+  dplyr::group_by(sexo) |>
+  dplyr::mutate(prop = n/sum(n)) |>
+  dplyr::ungroup()
+```
+
+
+## Faculdade de direito (dados utilizados no texto)
+
+```{r}
+#| eval: false
+
+# faculdade
+aux_decada |>
+  dplyr::count(sexo, faculdade_direito, sort = TRUE) |>
+  dplyr::group_by(sexo) |>
+  dplyr::mutate(prop = n/sum(n)) |>
+  dplyr::ungroup() |>
+  dplyr::arrange(sexo) |>
+  print(n = 100)
+```
+
+
+## Juiz substituto (dados utilizados no texto)
+
+```{r}
+#| eval: false
+
+aux_decada |>
+  dplyr::filter(quinto_constitucional != "sim") |>
+  #dplyr::filter(data_promocao_desembargador >= "2005-02-01") |>
+  #dplyr::filter(data_promocao_desembargador >= "2015-01-01") |>
+  dplyr::mutate(
+    juiz_substituto_2grau = dplyr::case_when(
+      juiz_substituto_2grau == "sim" ~ "sim",
+      .default = "não"
+    )
+  ) |>
+  #dplyr::count(juiz_substituto_2grau) |>
+  dplyr::count(sexo, juiz_substituto_2grau) |>
+  dplyr::group_by(sexo) |>
+  dplyr::mutate(prop = n/sum(n), s = sum(n)) |>
+  dplyr::ungroup()
+
+## não é significante
+prop.test(c(35, 522), c(38, 610))
+
+```
+
+## Quinto constitucional (dados utilizados no texto)
+
+```{r}
+#| label: prop-quinto-constitucional
+#| eval: false
+aux_decada |>
+  dplyr::mutate(
+    quinto_constitucional = dplyr::case_when(
+      quinto_constitucional %in% c("NA", "não", "não") ~ "não",
+      .default = "sim"
+    )
+  ) |>
+  dplyr::count(quinto_constitucional, sexo) |>
+  dplyr::group_by(quinto_constitucional) |>
+  dplyr::mutate(prop = n/sum(n)) |>
+  dplyr::ungroup()
+```
+
+
+## Quinto constitucional -- atual (dados utilizados no texto)
+
+```{r}
+#| eval: false
+aux_desemb_ativo |>
+  dplyr::inner_join(infos_pdf_desembargadores, "page") |>
+  dplyr::count(sexo) |>
+  dplyr::mutate(prop = n/sum(n))
+
+tab <- aux_desemb_ativo |>
+  dplyr::inner_join(infos_pdf_desembargadores, "page") |>
+  with(table(quinto_constitucional, sexo))
+
+prop.test(tab)
+```
+
+## Quinto constitucional -- histórico
+
+```{r}
+tab <- aux_decada |>
+  with(table(sexo, forcats::fct_rev(quinto_constitucional)))
+
+
+prop.test(tab) |>
+  broom::tidy() |>
+  dplyr::select(-c(method, alternative, statistic)) |>
+  dplyr::mutate(
+    diferenca = estimate1 - estimate2, .after = estimate2,
+    ic_diferenca = glue::glue("{scales::percent(conf.low, .1)}--{scales::percent(conf.high, .1)}"),
+    estimate1 = glue::glue("18 de 56 ({scales::percent(18/56, .01)})"),
+    estimate2 = glue::glue("115 de 725 ({scales::percent(115/725, .01)})"),
+    diferenca = scales::percent(diferenca, .01)
+  ) |>
+  dplyr::select(-conf.low, -conf.high, -parameter) |>
+  knitr::kable(
+    col.names = c(
+      "% Quinto - Mulheres",
+      "% Quinto - Homens",
+      "Diferença",
+      "IC da diferença",
+      "p-valor"
+    )
+  )
+
+```
+
+## Promotoria (dados utilizados no texto)
+
+```{r}
+#| eval: false
+
+tab <- aux_decada |>
+  dplyr::filter(quinto_constitucional == "sim") |>
+  dplyr::group_by(sexo) |>
+  dplyr::summarise(
+    n_quinto = dplyr::n(),
+    n_promotor = sum(foi_promotor == "sim"),
+    prop_promotor = scales::percent(mean(foi_promotor == "sim"), .1)
+  )
+
+prop.test(tab$n_promotor, tab$n_quinto)
+```
+
